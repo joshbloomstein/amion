@@ -206,27 +206,40 @@ def rotations_unfilled_in_month(df: pd.DataFrame, master_rotations: list[str], m
 app_ui = ui.page_fluid(
     ui.tags.style("""
         .sidebar { position: relative; z-index: 1000; }
-        .sidebar * { pointer-events: auto !important; }
-        input, textarea { pointer-events: auto !important; position: relative; z-index: 1001; }
+        .main { position: relative; z-index: 1; }
+
+        input, textarea {
+            pointer-events: auto !important;
+            position: relative;
+            z-index: 1001;
+        }
+
+        .shiny-output-error,
+        .shiny-output-error-validation {
+            pointer-events: none;
+        }
     """),
-        .shiny-output-error, .shiny-output-error-validation { pointer-events: none; }
-    .main { position: relative; z-index: 1; }
 
     ui.h3('Amion Rotation Openings Checker'),
+
     ui.layout_sidebar(
         ui.sidebar(
             ui.input_password('passkey', 'Amion passkey (hidden)'),
             ui.input_select(
                 'years',
                 'Academic years to scan (master list)',
-                choices = ['AY23', 'AY24', 'AY25'],
-                selected = ['AY23', 'AY24', 'AY25'],
-                multiple = True,
+                choices=['AY23', 'AY24', 'AY25'],
+                selected=['AY23', 'AY24', 'AY25'],
+                multiple=True,
             ),
-            ui.input_text('month', 'Month to check (YYYY-MM)', value = '2026-02'),
+            ui.input_text(
+                'month',
+                'Month to check (YYYY-MM)',
+                value='2026-02'
+            ),
             ui.input_action_button('load', 'Load / Refresh data'),
             ui.input_action_button('check', 'Check month'),
-            width = 4
+            width=4
         ),
         ui.div(
             ui.output_text_verbatim('status'),
