@@ -205,9 +205,12 @@ def rotations_unfilled_in_month(df: pd.DataFrame, master_rotations: list[str], m
 
 app_ui = ui.page_fluid(
     ui.tags.style("""
-        .sidebar { position: relative; z-index: 10; }
-        input, textarea { pointer-events: auto !important; }
+        .sidebar { position: relative; z-index: 1000; }
+        .sidebar * { pointer-events: auto !important; }
+        input, textarea { pointer-events: auto !important; position: relative; z-index: 1001; }
     """),
+        .shiny-output-error, .shiny-output-error-validation { pointer-events: none; }
+    .main { position: relative; z-index: 1; }
 
     ui.h3('Amion Rotation Openings Checker'),
     ui.layout_sidebar(
