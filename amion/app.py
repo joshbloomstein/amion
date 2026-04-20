@@ -227,7 +227,7 @@ def server(input, output, session):
             master_state.set(master)
 
             status_state.set(
-                f'Loaded rows = {len(df)}, all rotations = {len(master)}'
+                f'Loaded rows = {len(df)}, all assignments = {len(master)}'
             )
 
         except Exception as e:
