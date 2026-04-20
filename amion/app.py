@@ -6,48 +6,59 @@ from __future__ import annotations
 import pandas as pd
 import re
 import requests
-import sys
 
 from datetime import datetime
-from collections import Counter
 from io import StringIO
-from urllib.request import urlretrieve, Request, urlopen
 from urllib.parse import quote
 from shiny import App, reactive, render, ui
 
 def generate_url(startdate, enddate, passkey):
-    urlstem = 'https://www.amion.com/cgi-bin/ocs?Lo={}&Rpt=625ctabs'.format(
-        passkey
-    )
-
+    urlstem = f'https://www.amion.com/cgi-bin/ocs?Lo={passkey}&Rpt=625ctabs'
     y, m, d = startdate.strftime('%y'), startdate.month, startdate.day
     delta = (enddate - startdate).days
-    datestring = '&Day={}&Month={}-{}&Days={}'.format(d, m, y, delta)
-
-    return urlstem + datestring
+    return f'{urlstem}&Day={d}&Month={m}-{y}&Days={delta}'
 
 def fetch_table(url):
     headers = {
-        'User-Agent': (
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/120.0.0.0 Safari/537.36'
-        ),
-        'Accept': 'text/plain, */*;q=0.9',
-        'Connection': 'keep-alive',
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/plain",
+        "Connection": "close",
     }
 
-    req = Request(url, headers = headers)
-    with urlopen(req, timeout = 60) as resp:
-        text = resp.read().decode('utf-8', errors = 'replace')
+    try:
+        r = requests.get(url, headers=headers, timeout=60)
+        r.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"REQUEST FAILED: {e}")
+
+    text = r.text
+
+    if "<html" in text.lower():
+        raise RuntimeError("Received HTML instead of table (invalid Access Code or blocked)")
+
+    if len(text.strip()) < 100:
+        raise RuntimeError("Response too short (likely blocked or bad Access Code)")
 
     return StringIO(text)
 
+def _make_exclude_regex():
+    banned_terms = [
+        'Conf', 'Didactic', 'Exam', 'Panel', 'Retreat', 'R1', 'R2', 'R3',
+        'SOM Resc', 'Resc', 'ABIM', 'Board Prep',
+        'Chief', 'Clinic', 'Holiday', 'Off', 'Immersion', 'Academic',
+        'Vacation', 'Sick', 'Interview', 'PPC', 'Shadow', 'TBD', 'Jury',
+        'ACGME', 'ACLS', 'BELL Outpatient', 'H Med', 'Immersion', 'PC', 'RaTL',
+        'Panel Handoff', 'Risk', 'Bereavement', 'QI Project', 'Graduated',
+        'Health Equity', 'H ER', 'H MICU', 'Just-in-Time', 'Orientation', 'U ER',
+        'Vac', 'nan'
+    ]
+    pattern = r'(?:' + r'|'.join(re.escape(t) for t in banned_terms) + r')'
+    return re.compile(pattern, flags=re.IGNORECASE)
+
+_EXCLUDE_RE = _make_exclude_regex()
+
 def download_df(academicYear, passkey):
-    if academicYear == 'AY22':
-        startdate = datetime(2022, 6, 24)
-        enddate = datetime(2023, 6, 27)
-    elif academicYear == 'AY23':
+    if academicYear == 'AY23':
         startdate = datetime(2023, 6, 28)
         enddate = datetime(2024, 6, 30)
     elif academicYear == 'AY24':
@@ -56,282 +67,192 @@ def download_df(academicYear, passkey):
     elif academicYear == 'AY25':
         startdate = datetime(2025, 6, 30)
         enddate = datetime(2026, 6, 29)
+    elif academicYear == 'AY26':
+        startdate = datetime(2026, 6, 30)
+        enddate = datetime(2027, 6, 29)
     else:
-        startdate = datetime(1, 1, 1)
-        enddate = datetime(1, 1, 2)
+        return pd.DataFrame([])
 
-    passkey_encoded = quote(passkey)
-    url = generate_url(startdate, enddate, passkey_encoded)
+    url = generate_url(startdate, enddate, quote(passkey))
     file_like = fetch_table(url)
 
     try:
-        df = pd.read_table(
-            file_like,
-            skiprows = 7,
-            header = None,
-            usecols = [0, 3, 6, 7, 8, 9, 15, 16],
+        text = file_like.getvalue()
+        lines = text.splitlines()
+        data_lines = [l for l in lines if "\t" in l and "," in l]
+
+        if len(data_lines) == 0:
+            raise RuntimeError("No valid data lines found")
+
+        df_raw = pd.read_csv(
+            StringIO("\n".join(data_lines)),
+            sep="\t",
+            header=None,
+            engine="python"
         )
-    except pd.errors.EmptyDataError:
+
+        cols = df_raw.shape[1]
+
+        df = pd.DataFrame({
+            'Name': df_raw.iloc[:, 0],
+            'Assignment': df_raw.iloc[:, 3] if cols > 3 else '',
+            'Date': df_raw.iloc[:, 6] if cols > 6 else '',
+            'Start': df_raw.iloc[:, 7] if cols > 7 else '',
+            'Stop': df_raw.iloc[:, 8] if cols > 8 else '',
+            'Role': df_raw.iloc[:, 9] if cols > 9 else '',
+            'Type': df_raw.iloc[:, 15] if cols > 15 else '',
+            'Assgn': df_raw.iloc[:, 16] if cols > 16 else '',
+        })
+
+    except Exception:
         return pd.DataFrame([])
 
     df.columns = [
-        'Name',
-        'Assignment',
-        'Date',
-        'Start',
-        'Stop',
-        'Role',
-        'Type',
-        'Assgn',
+        'Name','Assignment','Date','Start','Stop','Role','Type','Assgn'
     ]
 
     df = df[~df.Role.isnull()]
     df = df[df.Role != 'Services']
-    df = df[df.Role.str[-1] != '*']
+    df = df[df.Role.astype(str).str[-1] != '*']
 
-    df['Name'] = (
-        df['Name']
-        .astype(str)
-        .str.replace("'", '', regex = False)
-        .str.replace('"', '', regex = False)
-        .str.strip()
-    )
-
+    df['Name'] = df['Name'].astype(str).str.replace("'", '').str.strip()
     df['Assignment'] = (
         df['Assignment']
         .astype(str)
         .str.strip()
-        .str.replace(r'\s+', ' ', regex = True)
+        .str.replace(r',\s*(am|pm)\s*$', '', regex=True, flags=re.IGNORECASE)
+        .str.replace(r'\s+', ' ', regex=True)
     )
+
+    df = df[df['Assignment'].notna()]
+    df = df[df['Assignment'] != '']
+    df = df[~df['Assignment'].str.contains(_EXCLUDE_RE, na=False)]
 
     return df
 
-def download_df_multi_year(academicYears, passkey):
+def download_df_multi_year(years, passkey):
     dfs = []
-    for ay in academicYears:
-        dfi = download_df(ay, passkey)
-        if not dfi.empty:
-            dfi['AcademicYear'] = ay
-            dfs.append(dfi)
+    for y in years:
+        d = download_df(y, passkey)
+        if not d.empty:
+            dfs.append(d)
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame([])
 
-    if not dfs:
-        return pd.DataFrame([])
+def build_master_rotations(df):
+    return sorted(df['Assignment'].dropna().unique().tolist())
 
-    return pd.concat(dfs, ignore_index = True)
+def rotations_unfilled_in_month(df, master, month):
+    start = pd.to_datetime(month + '-01')
+    end = start + pd.offsets.MonthBegin(1)
 
-def _parse_date_column(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df['Date_dt'] = pd.to_datetime(
-        df['Date'],
-        errors = 'coerce',
-        infer_datetime_format = True
-    )
-    return df
+    df_month = df.loc[start:end]
 
-def _clean_rotation_text(s: str) -> str:
-    s = str(s).strip()
-    s = re.sub(r'\s+', ' ', s)
-    s = re.sub(r',\s*(am|pm)\s*$', '', s, flags = re.IGNORECASE)
-    return s
-
-def _make_exclude_regex():
-    banned_terms = [
-        'Conf', 'Didactic', 'Exam', 'Panel', 'Retreat', 'R1', 'R2', 'R3',
-        'SOM Resc', 'Resc', 'ABIM', 'Board Prep',
-        'Chief', 'Clinic', 'Holiday', 'Off', 'Immersion', 'Academic',
-        'Vacation', 'Sick', 'Interview', 'PPC', 'Shadow', 'TBD', 'Jury',
-        'ACGME'
-    ]
-    pattern = r'(' + r'|'.join(re.escape(t) for t in banned_terms) + r')'
-    return re.compile(pattern, flags = re.IGNORECASE)
-
-_EXCLUDE_RE = _make_exclude_regex()
-
-def _prepare_rotations_df(df: pd.DataFrame) -> pd.DataFrame:
-    df2 = df.copy()
-    df2 = _parse_date_column(df2)
-
-    df2['Rotation'] = df2['Assignment'].map(_clean_rotation_text)
-
-    df2 = df2[df2['Rotation'].notna()]
-    df2 = df2[df2['Rotation'].astype(str).str.strip() != '']
-    df2 = df2[~df2['Rotation'].str.contains(_EXCLUDE_RE, na = False)]
-
-    df2 = df2[df2['Name'].notna()]
-    df2 = df2[df2['Name'].astype(str).str.strip() != '']
-
-    df2 = df2[df2['Date_dt'].notna()]
-
-    return df2[['Name', 'Rotation', 'Date_dt']].copy()
-
-def _rotations_with_repeat_use(df_rot: pd.DataFrame, min_count = 6, window_days = 92) -> set:
-    window_ns = int(window_days * 24 * 60 * 60 * 1_000_000_000)
-    qualifying = set()
-
-    df_rot = df_rot.copy()
-    df_rot['t'] = df_rot['Date_dt'].values.astype('datetime64[ns]').astype('int64')
-    df_rot = df_rot.sort_values(['Name', 'Rotation', 't'])
-
-    for (name, rot), g in df_rot.groupby(['Name', 'Rotation'], sort = False):
-        t = g['t'].to_numpy()
-        i = 0
-        for j in range(len(t)):
-            while t[j] - t[i] > window_ns:
-                i += 1
-            if (j - i + 1) >= min_count:
-                qualifying.add(rot)
-                break
-
-    return qualifying
-
-def build_master_rotations(df: pd.DataFrame) -> list[str]:
-    df_rot = _prepare_rotations_df(df)
-    qualifying = _rotations_with_repeat_use(df_rot = df_rot, min_count = 6, window_days = 92)
-    return sorted(qualifying, key = lambda x: x.lower())
-
-def rotations_unfilled_in_month(df: pd.DataFrame, master_rotations: list[str], month_yyyy_mm: str) -> list[str]:
-    df_rot = _prepare_rotations_df(df)
-
-    month_start = pd.to_datetime(month_yyyy_mm + '-01')
-    month_end = month_start + pd.offsets.MonthBegin(1)
-
-    in_month = df_rot[(df_rot['Date_dt'] >= month_start) & (df_rot['Date_dt'] < month_end)]
-    filled = set(in_month['Rotation'].dropna().unique().tolist())
-
-    unfilled = [r for r in master_rotations if r not in filled]
-    unfilled = sorted(set(unfilled), key = lambda x: x.lower())
-    unfilled = [r.replace('*', '') for r in unfilled]
-    return unfilled
+    filled = set(df_month['Assignment'])
+    return sorted(set(master) - filled)
 
 app_ui = ui.page_fluid(
-    ui.tags.style("""
-        .sidebar { position: relative; z-index: 1000; }
-        .main { position: relative; z-index: 1; }
-
-        input, textarea {
-            pointer-events: auto !important;
-            position: relative;
-            z-index: 1001;
-        }
-
-        .shiny-output-error,
-        .shiny-output-error-validation {
-            pointer-events: none;
-        }
-    """),
 
     ui.h3('Amion Rotation Openings Checker'),
 
+    ui.input_text('passkey', 'Amion Access Code'),
+
     ui.layout_sidebar(
         ui.sidebar(
-            ui.input_password('passkey', 'Amion passkey (hidden)'),
             ui.input_select(
                 'years',
-                'Academic years to scan (master list)',
-                choices=['AY23', 'AY24', 'AY25'],
-                selected=['AY23', 'AY24', 'AY25'],
-                multiple=True,
+                'Academic years',
+                ['AY23','AY24','AY25','AY26'],
+                selected=['AY23','AY24','AY25','AY26'],
+                multiple=True
             ),
-            ui.input_text(
-                'month',
-                'Month to check (YYYY-MM)',
-                value='2026-02'
-            ),
-            ui.input_action_button('load', 'Load / Refresh data'),
-            ui.input_action_button('check', 'Check month'),
-            width=4
+            ui.input_text('month','Month (YYYY-MM)','2026-02'),
+            ui.input_action_button('load','Load / Refresh data'),
+            ui.input_action_button('check','Check month')
         ),
         ui.div(
             ui.output_text_verbatim('status'),
             ui.hr(),
-            ui.h4('Master rotations (count)'),
+            ui.h4('All assignments (count)'),
             ui.output_text('master_count'),
-            ui.h4('Rotations that may have openings'),
+            ui.h4('Assignments that may have openings'),
             ui.output_table('unfilled_table'),
-            ui.h4('Raw list'),
-            ui.output_text_verbatim('unfilled_list'),
         )
     )
 )
 
 def server(input, output, session):
+
     df_state = reactive.Value(pd.DataFrame([]))
     master_state = reactive.Value([])
-    unfilled_state = reactive.Value([])
-    status_state = reactive.Value('Ready. Enter passkey and click Load / Refresh data.')
+    status_state = reactive.Value('Ready')
+    unfilled_state = reactive.Value(pd.DataFrame([]))
 
     @reactive.Effect
     @reactive.event(input.load)
-    def _load_data():
-        passkey = (input.passkey() or '').strip()
+    def load_data():
+
+        pk = (input.passkey() or '').strip()
         years = list(input.years() or [])
 
-        if passkey == '':
-            status_state.set('No passkey entered.')
-            df_state.set(pd.DataFrame([]))
-            master_state.set([])
-            unfilled_state.set([])
-            return
-
-        if not years:
-            status_state.set('No academic years selected.')
-            df_state.set(pd.DataFrame([]))
-            master_state.set([])
-            unfilled_state.set([])
+        if pk == '':
+            status_state.set('No Access Code entered.')
             return
 
         try:
-            status_state.set('Loading data from Amion...')
-            df = download_df_multi_year(years, passkey)
+            status_state.set('Loading...')
+
+            df = download_df_multi_year(years, pk)
 
             if df.empty:
-                status_state.set('Pulled 0 rows (or export empty).')
-                df_state.set(pd.DataFrame([]))
-                master_state.set([])
-                unfilled_state.set([])
+                status_state.set('No data returned.')
                 return
 
-            status_state.set('Building master rotation list...')
+            df['Date'] = df['Date'].astype(str).str.strip()
+
+            df['Date_dt'] = pd.to_datetime(
+                df['Date'],
+                format='%m-%d-%y',
+                errors='coerce'
+            )
+
+            df = df[df['Date_dt'].notna()]
+
+            df = df.sort_values('Date_dt')
+
+            df = df.set_index('Date_dt')
+
             master = build_master_rotations(df)
 
             df_state.set(df)
             master_state.set(master)
-            unfilled_state.set([])
 
             status_state.set(
-                'Loaded rows = {}, master rotations = {}.'.format(len(df), len(master))
+                f'Loaded rows = {len(df)}, all rotations = {len(master)}'
             )
 
         except Exception as e:
-            status_state.set('Load failed (did not crash UI): {}'.format(e))
-            df_state.set(pd.DataFrame([]))
-            master_state.set([])
-            unfilled_state.set([])
+            status_state.set(f'Load failed: {e}')
 
     @reactive.Effect
     @reactive.event(input.check)
-    def _check_month():
-        month = (input.month() or '').strip()
+    def check_month():
+
         df = df_state.get()
         master = master_state.get()
+        month = (input.month() or '').strip()
 
-        if df.empty or not master:
-            status_state.set('No data/master list loaded. Click Load / Refresh data first.')
-            unfilled_state.set([])
+        if df.empty:
+            status_state.set('Load data first.')
             return
 
         if not re.match(r'^\d{4}-\d{2}$', month):
-            status_state.set('Invalid month format. Use YYYY-MM (example: 2026-02).')
-            unfilled_state.set([])
+            status_state.set('Invalid month format.')
             return
 
-        try:
-            unfilled = rotations_unfilled_in_month(df, master, month)
-            unfilled_state.set(unfilled)
-            status_state.set('Computed openings for {} (n = {}).'.format(month, len(unfilled)))
-        except Exception as e:
-            status_state.set('Check failed: {}'.format(e))
-            unfilled_state.set([])
+        result = rotations_unfilled_in_month(df, master, month)
+
+        unfilled_state.set(pd.DataFrame({'Assignment': result}))
+        status_state.set(f'{len(result)} openings found')
 
     @output
     @render.text
@@ -346,14 +267,6 @@ def server(input, output, session):
     @output
     @render.table
     def unfilled_table():
-        return pd.DataFrame({'Rotation': unfilled_state.get()})
-
-    @output
-    @render.text
-    def unfilled_list():
-        unfilled = unfilled_state.get()
-        if not unfilled:
-            return ''
-        return '\n'.join(['- {}'.format(r) for r in unfilled])
+        return unfilled_state.get()
 
 app = App(app_ui, server)
