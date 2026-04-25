@@ -50,7 +50,10 @@ def _make_exclude_regex():
         'ACGME', 'ACLS', 'BELL Outpatient', 'H Med', 'Immersion', 'PC', 'RaTL',
         'Panel Handoff', 'Risk', 'Bereavement', 'QI Project', 'Graduated',
         'Health Equity', 'H ER', 'H MICU', 'Just-in-Time', 'Orientation', 'U ER',
-        'Vac', 'nan'
+        'Vac', 'nan', 'H Neuro', 'U Med', 'V Med', 'V Night Med', 'V MICU',
+        'V Cards', 'U Cards A', 'Elective', 'U HO', 'LWOP', 'H Geri', 'H CCU'
+        'H Cards Consult', 'GIM', 'GME', 'Precept', 'Stud Eve H', 'Swing',
+        'Primary Care'
     ]
     pattern = r'(?:' + r'|'.join(re.escape(t) for t in banned_terms) + r')'
     return re.compile(pattern, flags=re.IGNORECASE)
